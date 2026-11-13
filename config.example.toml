@@ -1,0 +1,66 @@
+# Copia a ~/.config/orbital/config.toml y ajusta. Todo es opcional.
+
+[identity]
+name = "O.R.B.I.T.A.L"
+
+[models]
+ollama_url = "http://127.0.0.1:11434"
+router = "qwen3.5:2b"          # decide la ruta; pequeño y siempre cargado
+local  = "qwen3.5:4b"           # respaldo si borras [[models.tiers]]
+ram_margin_gb = 1.5             # RAM que siempre se deja libre para tus apps
+make_room_max_gb = 4.5          # si al modelo pedido le faltan hasta 4.5 GB: descarga otros modelos y ofrece cerrar apps          # tareas sencillas; se descarga a los 5 min para liberar RAM
+router_keep_alive = "30m"
+local_keep_alive  = "5m"
+router_num_ctx = 2048          # límite de contexto: sin esto Ollama puede reservar GBs y congelar la PC
+local_num_ctx  = 8192
+gemini_model = "gemini-flash-latest"   # o el nombre exacto que uses en Aider
+gemini_api_key_env = "GEMINI_API_KEY"
+
+[routing]
+# destino de cada ruta: "local" | "gemini" | "human"
+simple = "local"
+medium = "gemini"
+heavy  = "human"
+gemini_only_for_code = true   # si no hay código de por medio, no se usa Gemini
+
+[agent]
+max_steps = 15
+command_timeout = 60
+max_tool_output = 6000
+sandbox = "auto"                # auto: usa bubblewrap si está | required: sin bwrap no ejecuta | off
+sandbox_network = true          # los comandos del agente tienen internet; false para cortarla
+plan_mode = "auto"              # auto: plan solo al reorganizar | always: en toda tarea con herramientas | off
+home_search_limit = 2           # búsquedas recursivas en todo el home por tarea (solo si las pides)
+final_review = true             # en tareas de 3+ pasos, revisa que no falte nada antes de responder
+
+[monitor]
+enabled = true
+high = 85               # % de saturación: espera y ofrece cerrar apps
+critical = 95           # %: pausa el razonamiento 30 s
+wait_seconds = 8
+pause_seconds = 30
+pause_retries = 3
+reduced_model = "qwen3.5:2b"   # último recurso
+reduced_num_ctx = 2048
+swap_growth_mb = 400           # si el swap crece esto mientras genera, corta y pausa
+
+[security]
+secret_paths = ["~/.ssh", "~/.gnupg", "~/.password-store", "~/.config/orbital/secrets"]
+secret_globs = [".env", "*.pem", "*.key", "id_rsa*", "*.kdbx"]
+
+# Escalera de modelos locales: O.R.B.I.T.A.L elige según la complejidad de la tarea y la RAM libre.
+# Fuerza uno con /modelo 2b|4b|9b (no recomendado) y vuelve con /modelo auto.
+[[models.tiers]]
+model = "qwen3.5:2b"
+ram_gb = 3.0
+num_ctx = 4096
+
+[[models.tiers]]
+model = "qwen3.5:4b"
+ram_gb = 4.5
+num_ctx = 8192
+
+[[models.tiers]]
+model = "qwen3.5:9b"
+ram_gb = 8.0
+num_ctx = 8192

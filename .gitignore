@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# local config and secrets (the real config holds paths; keys live in the system keyring)
+config.toml
+.env
+*.key
+
+# runtime data and backups
+*.zip
+*.bak
+*.orbital.bak
+memoria/
+scratch/
+*.log

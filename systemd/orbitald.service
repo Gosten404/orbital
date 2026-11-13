@@ -1,0 +1,13 @@
+[Unit]
+Description=O.R.B.I.T.A.L daemon
+After=network-online.target ollama.service
+
+[Service]
+# Pon tu API key en ~/.config/orbital/env  ->  GEMINI_API_KEY=xxxx
+EnvironmentFile=-%h/.config/orbital/env
+ExecStart=%h/.local/bin/orbitald
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
