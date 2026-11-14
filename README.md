@@ -1,4 +1,4 @@
-# O.R.B.I.T.A.L · v0.2.26
+# O.R.B.I.T.A.L · v0.2.27
 
 Asistente local para Linux (X11). Requiere Python 3.10 o superior. Una petición pasa por un enrutador local que decide a quién mandarla:
 

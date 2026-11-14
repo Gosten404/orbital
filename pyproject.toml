@@ -1,6 +1,6 @@
 [project]
 name = "orbital"
-version = "0.2.26"
+version = "0.2.27"
 description = "Asistente local para Linux: enrutador qwen local, Gemini y relevo humano."
 requires-python = ">=3.10"
 license = {text = "GPL-3.0-or-later"}
