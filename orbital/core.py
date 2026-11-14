@@ -154,6 +154,10 @@ Scripts y archivos temporales:
   carpeta padre. Si por algo lo escribes dentro de la carpeta de trabajo, no te preocupes por borrarlo: al
   terminar yo muevo solo los scripts que escribí y ejecuté a la temporal. Solo deja un script en una carpeta
   del usuario si él te pidió EL SCRIPT como entregable.
+Leer, resumir y evaluar documentos:
+- Para resumir, evaluar o calificar un PDF o texto, leerlo COMPLETO con read_file. inspect solo muestra el inicio:
+  nunca resumir ni calificar a partir de inspect. Notas y citas se basan en lo leído; sin lectura completa, decirlo.
+- "X/10" o "califícalo 1/10" = nota sobre 10 (no un 1 literal). Con varios documentos, calificar cada uno por separado.
 Búsqueda:
 - Si necesitas una llave o contraseña que "está a la vista", prueba primero lo que ya tienes: el nombre del archivo,
   el nombre de la carpeta, la fecha. No la busques en archivos de configuración.
@@ -450,24 +454,30 @@ class Brain:
             target = "local"
         return {"local": self.local, "gemini": self.gemini}.get(target)  # None => humano
 
-    async def classify(self, text: str, io: IO, mode: str = "auto") -> dict:
+    async def ask_router(self, text: str, io: IO) -> dict:
+        await io.status("decidiendo ruta...")
+        try:
+            r = parse_json(await self.router.chat(
+                [{"role": "system", "content": ROUTER_PROMPT}, {"role": "user", "content": text}], json_mode=True))
+            if r.get("route") not in ("simple", "medium", "heavy"):
+                r["route"] = "medium"
+            return r
+        except ProviderError as e:
+            await io.status(f"Router no disponible ({e}): ruta medium")
+            return {"route": "medium", "herramientas": None, "motivo": "fallback"}
+
+    async def classify(self, text: str, io: IO, mode: str = "auto", autonomous: bool = False) -> dict:
         """El enrutador decide ruta y si hace falta usar herramientas.
         /local, /gemini y /human fijan la ruta; el router solo decide lo de las herramientas."""
         forced_route = None
         for prefix, route in {"/local": "simple", "/gemini": "medium", "/human": "heavy"}.items():
             if text.startswith(prefix + " "):
                 forced_route, text = route, text[len(prefix) + 1:]
-        await io.status("decidiendo ruta...")
-        try:
-            raw = await self.router.chat(
-                [{"role": "system", "content": ROUTER_PROMPT}, {"role": "user", "content": text}], json_mode=True
-            )
-            r = parse_json(raw)
-            if r.get("route") not in ("simple", "medium", "heavy"):
-                r["route"] = "medium"
-        except ProviderError as e:
-            await io.status(f"Router no disponible ({e}): ruta medium")
-            r = {"route": "medium", "herramientas": None, "motivo": "fallback"}
+        early = forced_route or ({"local": "simple", "gemini": "medium", "human": "heavy"}.get(mode) if mode != "auto" else None)
+        if early in ("medium", "heavy") and autonomous:
+            r = {"route": early, "herramientas": True, "motivo": "forzado"}   # ya decidido: sin router (16-22 s)
+        else:
+            r = await self.ask_router(text, io)
         lvl, why = complexity_rules(text, r.get("complejidad"))
         if why.startswith("regla") and str(r.get("complejidad")) != str(lvl):
             why += f" (router: {r.get('complejidad', '?')})"
@@ -513,7 +523,7 @@ class Brain:
                 self.remember_node(s, text, quick)
                 await io.say(quick)
                 return
-        r = await self.classify(text, io, s.mode)
+        r = await self.classify(text, io, s.mode, s.policy.autonomous)
         task = r["texto"]
         needs_tools = r.get("herramientas")
         if needs_tools is None:  # ruta forzada: asumimos herramientas si hay sesión autónoma
@@ -1493,6 +1503,11 @@ class Brain:
             useless = (head.startswith(("ERROR", "RECHAZADO", "BLOQUEADO")) or "[timeout tras" in head
                        or "sin resultados" in result[-200:] or "(nada modificado" in result[-200:]
                        or (len(trail) >= 2 and trail[-1] == trail[-2]))
+            call_key = (name, json.dumps(args, sort_keys=True, ensure_ascii=False, default=str))
+            calls = state.setdefault("calls", set())
+            if name in self.READ_ONLY and call_key in calls:
+                useless = True   # misma consulta de solo lectura ya hecha en esta tarea: no es avance
+            calls.add(call_key)
             no_progress = no_progress + 1 if useless else 0
             # ¿ya terminó y solo da vueltas? Tras un cambio real (mover, escribir, ejecutar), encadenar pasos de
             # solo mirar o repetir llamadas idénticas es relleno: aviso una vez y luego cierro con los hechos.
@@ -1663,6 +1678,7 @@ class Brain:
             await io.status("[+] Sandbox: acceso solo a " + ", ".join(str(p) for p in rw))
         return argv
 
+    READ_ONLY = {"find", "grep", "recent", "list", "tree", "map", "inspect", "read_file"}
     RECURSIVE = {"grep", "find", "recent"}
     ORGANIZE = {"move", "classify", "undo", "group", "empties", "rename"}
     SURVEY_TOOLS = {"tree", "inspect", "map"}

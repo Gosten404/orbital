@@ -1851,3 +1851,39 @@ def v0226_gemini():
 
 v0226_gemini()
 print("0.2.26 gemini OK")
+
+
+def v0227():
+    import asyncio, subprocess, shutil, tempfile
+    from pathlib import Path
+    from orbital import tools, core
+    # PDF completo (si hay pdftotext y alguna forma de crear un PDF mínimo)
+    d = Path(tempfile.mkdtemp())
+    if shutil.which("pdftotext"):
+        pdf = d / "ensayo.pdf"
+        body = b"BT /F1 12 Tf 72 720 Td (Texto completo del ensayo: conclusion final.) Tj ET"
+        objs = [b"<</Type/Catalog/Pages 2 0 R>>", b"<</Type/Pages/Kids[3 0 R]/Count 1>>",
+                b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>",
+                b"<</Length %d>>\nstream\n" % len(body) + body + b"\nendstream", b"<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>"]
+        out = b"%PDF-1.4\n"; offs = []
+        for i, o in enumerate(objs, 1):
+            offs.append(len(out)); out += b"%d 0 obj\n" % i + o + b"\nendobj\n"
+        x = len(out); out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1) + b"".join(b"%010d 00000 n \n" % o for o in offs)
+        out += b"trailer\n<</Size %d/Root 1 0 R>>\nstartxref\n%d\n%%%%EOF" % (len(objs) + 1, x)
+        pdf.write_bytes(out)
+        t = asyncio.run(tools.read_file({"path": str(pdf)}, 6000))
+        assert "conclusion final" in t, t
+    # ruta forzada + sesión autónoma: sin router
+    b = core.Brain.__new__(core.Brain)
+    class Boom:
+        async def chat(self, *a, **k): raise AssertionError("el router no debía llamarse")
+    class IO0:
+        async def status(self, *a, **k): pass
+    b.router = Boom()
+    r = asyncio.run(b.classify("/gemini resume el ensayo", IO0(), "auto", True))
+    assert r["route"] == "medium" and r["herramientas"] is True and r["texto"] == "resume el ensayo", r
+    assert "X/10" in core.AGENT_PROMPT and "COMPLETO" in core.AGENT_PROMPT
+
+
+v0227()
+print("0.2.27 OK")

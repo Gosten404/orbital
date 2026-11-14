@@ -5,7 +5,7 @@ import asyncio
 from pathlib import Path
 
 TOOL_DOCS = """\
-- read_file {"path": str, "max_chars"?: int}: lee un archivo de texto.
+- read_file {"path": str, "max_chars"?: int, "pages"?: int}: lee un archivo de texto o el TEXTO COMPLETO de un PDF (hasta 12000 caracteres, 30 páginas).
 - list {"path": str, "hidden"?: bool}: lista una carpeta: primero archivos (del más reciente al más viejo), luego carpetas.
 - recent {"path": str, "hours"?: int, "hidden"?: bool}: archivos modificados en las últimas N horas (24 por defecto), del más nuevo al más viejo, sin carpetas ocultas (cachés de apps). Úsala cuando el usuario diga que creó o cambió algo hace poco, o no sepa el nombre.
 - find {"name": str, "path": str}: busca ARCHIVOS POR NOMBRE. Sin comodines: todas las palabras en cualquier orden, sin acentos ni mayúsculas ("pasaporte scout"). Con comodines: patrón ("*.py"). Más recientes primero.
@@ -30,8 +30,28 @@ def _p(args: dict, key: str = "path") -> Path:
     return Path(args.get(key) or ".").expanduser()
 
 
+def _pdf_full(p: Path, pages: int) -> str | None:
+    import re
+    import shutil
+    import subprocess
+    if not shutil.which("pdftotext"):
+        return None
+    r = subprocess.run(["pdftotext", "-l", str(pages), "-q", str(p), "-"], capture_output=True, text=True, timeout=30)
+    return re.sub(r"\n{3,}", "\n\n", re.sub(r"[ \t]+", " ", r.stdout)).strip()
+
+
 async def read_file(args: dict, max_out: int) -> str:
     p = _p(args)
+    if p.suffix.lower() == ".pdf":
+        pages = max(1, min(int(args.get("pages", 30) or 30), 60))
+        text = await asyncio.to_thread(_pdf_full, p, pages)
+        if text is None:
+            return "ERROR: falta pdftotext (sudo apt install poppler-utils) para leer PDFs."
+        if not text:
+            return f"PDF sin texto extraíble ({p.name}): puede ser un escaneo."
+        limit = min(int(args.get("max_chars", 12000) or 12000), 16000)
+        extra = f"\n…[recortado, {len(text)} caracteres en total]" if len(text) > limit else ""
+        return text[:limit] + extra
     head = p.open("rb").read(4096)
     if b"\x00" in head:
         kind = {b"PK": "zip", b"\x7fE": "ejecutable ELF", b"%P": "pdf", b"\x89P": "png", b"\xff\xd8": "jpg"}.get(head[:2], "binario")
