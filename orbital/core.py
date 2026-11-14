@@ -218,6 +218,7 @@ Inventario de {cwd}:
 No tocar: {veto}"""
 
 # Tareas donde conviene un plan antes de mover nada (reorganizar, mover/borrar en masa).
+FOLLOWUP_RX = re.compile(r"\b(eso|esos|esas?|lo anterior|los mismos|las mismas|de nuevo|otra vez|contin[uú]a|sigue|ahora (?:haz|mueve|borra|elimina|pasa)|el resto|lo mismo|anterior)\b", re.I)
 REORG_RX = re.compile(r"organiz|reestructur|reorganiz|clasific|ordena(r)? (mi|el|la|los|todo)|(?:re)?agrup|junta(?:r)? (?:todos|los|las)|mete (?:todos|los|las)|pasa (?:todos|los|las)|"
                       r"carpetas vac[ií]as|cambia(r)? (sus|los) nombres|renombra|limpia(r)? (los )?nombres|"
                       r"archivos (viejos|pesados|grandes|antiguos)|"
@@ -272,7 +273,7 @@ class Brain:
                              options={"num_ctx": m["router_num_ctx"], **nt})
         self.local = Ollama(m["ollama_url"], m["local"], m["local_keep_alive"],
                             options={"num_ctx": m["local_num_ctx"], **nt})
-        self.gemini = Gemini(m["gemini_model"], m["gemini_api_key_env"], m.get("ipv4_only", True),
+        self.gemini = Gemini(m.get("gemini_models") or m["gemini_model"], m["gemini_api_key_env"], m.get("ipv4_only", True),
                              read_timeout=m.get("gemini_read_timeout", 25.0), retries=m.get("gemini_retries", 4),
                              base=m.get("gemini_base", "https://generativelanguage.googleapis.com/v1beta"))
 
@@ -406,10 +407,22 @@ class Brain:
                 return ("answer", ans)
             if nxt is self.gemini and not self.gemini.available:
                 continue
+            if isinstance(nxt, Ollama) and not await self.fits(nxt):
+                await io.status(f"   [!] {nxt.model}: RAM libre insuficiente; no escalar")
+                mem.note(f"Escalado a {nxt.model} omitido: RAM insuficiente")
+                continue
             await io.status(f"   [>] {reason}: escalar a {nxt.name}")
             mem.note(f"Escalado a {nxt.name}: {reason}")
             return ("switch", nxt)
         return ("stop", None)
+
+    async def fits(self, provider: "Ollama") -> bool:
+        """Un modelo local cabe si ya está cargado o si hay RAM libre para sus pesos (evita swap)."""
+        tiers = {x["model"]: x["ram_gb"] for x in self.tiers()}
+        loaded = {(x.get("name") or x.get("model")) for x in await loaded_models(self.cfg["models"]["ollama_url"])}
+        if provider.model in loaded or provider.model not in tiers:
+            return True
+        return tiers[provider.model] <= monitor.available_gb() - self.cfg["models"].get("ram_margin_gb", 1.5)
 
     def smaller_fit(self, provider) -> "Ollama | None":
         """El siguiente modelo local más chico que el actual (aunque esté forzado), para que quepa
@@ -508,7 +521,8 @@ class Brain:
         s.complexity = int(r.get("complejidad") or 2)
         provider = self.provider_for(r["route"])
         if provider is self.local and isinstance(provider, Ollama):  # escalera de modelos locales
-            await io.status(f"[i] Complejidad {r['complejidad']}: {r.get('por_que_nivel', '')}")
+            why = re.split(r"(?<=[.!?])\s", str(r.get('por_que_nivel', '')).strip())[0][:140]
+            await io.status(f"[i] Complejidad {r['complejidad']}: {why}")
             provider = await self.pick_local(r.get("complejidad", 2), s, io)
         self.log({"ev": "route", "text": task, "modelo": getattr(provider, "name", "humano"),
                   **{k: r.get(k) for k in ("route", "herramientas", "complejidad", "por_que_nivel", "motivo")}})
@@ -546,9 +560,9 @@ class Brain:
             executor = self.gemini if self.gemini.available else (
                 await self.pick_local(3, s, io) if isinstance(self.local, Ollama) else self.local)
             agent_task = f"{agent_task}\n\nPLAN DEL EXPERTO (síguelo, adaptándolo a lo que encuentres):\n{plan}"
-            answer = await self.run_agent(agent_task, s, io, executor)
+            answer = await self.run_agent(agent_task, s, io, executor, title=task)
         elif needs_tools:
-            answer = await self.run_agent(agent_task, s, io, provider)
+            answer = await self.run_agent(agent_task, s, io, provider, title=task)
         else:
             answer = await self.chat(s, io, provider, ctx)
         s.remember("assistant", answer)
@@ -1255,11 +1269,12 @@ class Brain:
         return moved
 
     # ---------- agente con herramientas ----------
-    async def run_agent(self, task: str, s: Session, io: IO, provider) -> str:
+    async def run_agent(self, task: str, s: Session, io: IO, provider, title: str | None = None) -> str:
         acfg = self.cfg["agent"]
-        mem = TaskMemory(self.data_dir, task.split("\n")[0], provider.name, s.policy.describe(), s.cwd)
+        title = (title or task).split("\n")[0]   # petición original: sin contexto de nodo ni plan
+        mem = TaskMemory(self.data_dir, title, provider.name, s.policy.describe(), s.cwd)
         await io.status(f"[#] Bitácora: {mem.path}")
-        ts: dict = {}
+        ts: dict = {"_title": title}
         try:
             answer = await self._agent_loop(task, s, io, provider, mem, acfg, ts)
             await self.report_stats(ts.get("_state", {}), io, mem)
@@ -1293,7 +1308,7 @@ class Brain:
     async def _agent_loop(self, task: str, s: Session, io: IO, provider, mem: TaskMemory, acfg: dict,
                           ts: dict | None = None) -> str:
         system = AGENT_PROMPT.format(tools=tools.TOOL_DOCS, cwd=s.cwd, policy=s.policy.describe(), **self.ident())
-        past = s.history[:-1][-6:]
+        past = s.history[:-1][-6:] if FOLLOWUP_RX.search((ts or {}).get("_title") or task) else []
         if past:   # tareas anteriores: solo contexto; como turnos de chat el modelo las retomaba como pendientes
             system += ("\nHistorial (tareas ya terminadas; solo contexto, no repetir ni retomar salvo petición expresa):\n"
                        + "\n".join(f"  {m['role']}: {m['content'][:300]}" for m in past))
@@ -1461,7 +1476,7 @@ class Brain:
                         "corrigiendo cualquier ruta o dato mal escrito.")})
                     continue
                 mem.step(step, thought, "responder", str(act["respuesta"])[:300])
-                return str(act["respuesta"]) + self.unmet_note(task, state)
+                return str(act["respuesta"]) + self.unmet_note(ts.get("_title") or task, state)
             name, args = act.get("tool", ""), act.get("args", {}) or {}
             if not isinstance(args, dict):
                 args = {}
@@ -1503,7 +1518,7 @@ class Brain:
                 if lim and (state["idle"] >= lim or state["again"] >= 2):
                     await io.status("[+] Sin cambios nuevos: tarea cerrada")
                     mem.note("Cierre automático: pasos de solo lectura tras completar los cambios")
-                    return self.fallback_answer(trail, mem, head="Tarea terminada (cierre automático por verificaciones repetidas). Acciones registradas:") + self.unmet_note(task, state)
+                    return self.fallback_answer(trail, mem, head="Tarea terminada (cierre automático por verificaciones repetidas). Acciones registradas:") + self.unmet_note(ts.get("_title") or task, state)
                 if lim and state["idle"] == max(2, lim // 2):
                     msgs.append({"role": "user", "content": "Si ya cumpliste lo pedido, devuelve AHORA "
                                  "{\"respuesta\": \"...\"} con lo que hiciste. No sigas verificando."})

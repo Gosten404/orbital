@@ -100,6 +100,23 @@ Cada tarea con herramientas escribe una bitácora en `~/.local/share/orbital/mem
 
 O.R.B.I.T.A.L **no puede** escribir en su carpeta de código ni ejecutar comandos que la toquen (solo puede leerla con `ls`, `cat`, `grep` o `git log/diff/status`), ni siquiera en nivel 3. Si se modifica a sí mismo, se rompe. Su nombre y sus ajustes van en `~/.config/orbital/config.toml`.
 
+## v0.2.25: actualizar, publicar y base de voz
+
+**Actualizar** (en la PC de uso): `orbital update`. Hace `git fetch`, `merge --ff-only`, reinstala, comprueba que todo importa y reinicia `orbitald`. Si algo falla después de bajar el código, vuelve solo a la versión anterior.
+`orbital update --check` solo informa si hay versión nueva · `--rollback` vuelve a la anterior · `--full` corre además la suite de pruebas · `--no-restart` no reinicia el daemon · `orbital --version`.
+Se niega a actualizar con cambios locales sin guardar. Requiere que la instalación sea un clon de git (el que usa `instalar.sh`).
+
+**Publicar** (en la PC de desarrollo): `python3 tools/release.py 0.2.26`. Exige árbol limpio, corre pruebas y lint, sube la versión (`pyproject.toml`, `orbital/__init__.py`, título del README), hace commit y tag `v0.2.26` y empuja. `--no-push` deja el commit y el tag en local. El título del cliente ya sale de `__version__`.
+
+**Voz (base de v0.3)**: `/voice on|off`. El daemon emite eventos breves; el cliente los pasa a un motor.
+- `start`: «Tarea iniciada.» · `help` (confirmación, elección o relevo): «Se requiere intervención. …» · `error` · `done`.
+- El texto sale de plantillas y de limpiar la respuesta (sin markdown, código, URLs ni rutas). Las cifras de move/classify/undo se leen directo del resultado («160 archivos movidos a 1 carpetas») sin modelo.
+- El 2b resume **una sola vez, al terminar**, y solo si la respuesta es larga. Sin resumen por paso: el 4b ya ocupa la CPU. Si el 2b no responde en `summary_timeout`, se recorta el texto.
+- Con la voz activa, el prompt vuelve cuando sale el último evento (el cliente solo lee mensajes durante la tarea).
+- Motores: `[voice] backend = "print"` muestra `[voz:done] …`; `"none"` no hace nada. Un motor de audio se agrega como clase con `async speak(text, kind)` en `voice.BACKENDS`.
+
+Incluye la licencia GPL-3.0-or-later (`LICENSE`, aviso al final del README).
+
 ## v0.2.24: identificadores en inglés y cuatro fallos del log de audios
 
 Herramientas, argumentos y piezas de formato pasan a inglés (la interfaz sigue en español). Corte limpio: los nombres anteriores ya no existen.
@@ -459,3 +476,9 @@ ORBITAL_CONFIG=/nonexistent python3 tests/test_smoke.py   # sin Ollama ni Gemini
 - **v0.4**: tus scripts de visión y clicks, y O.N.I.X, como herramientas
 - **v0.45**: overlay de arranque en X11 que muestra la "toma de control" con datos reales
 - **v0.5**: O.R.B.I.T.A.L propone automatizaciones a partir del log
+
+## Licencia
+
+Copyright (C) 2026 Gosten404
+
+Este programa es software libre: se puede redistribuir y modificar bajo los términos de la Licencia Pública General de GNU, versión 3 o (a elección) cualquier versión posterior, publicada por la Free Software Foundation. Se distribuye SIN GARANTÍA, ni siquiera la implícita de comerciabilidad o idoneidad para un fin concreto. Texto completo en `LICENSE`.

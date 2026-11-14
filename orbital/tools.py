@@ -8,7 +8,7 @@ TOOL_DOCS = """\
 - read_file {"path": str, "max_chars"?: int}: lee un archivo de texto.
 - list {"path": str, "hidden"?: bool}: lista una carpeta: primero archivos (del más reciente al más viejo), luego carpetas.
 - recent {"path": str, "hours"?: int, "hidden"?: bool}: archivos modificados en las últimas N horas (24 por defecto), del más nuevo al más viejo, sin carpetas ocultas (cachés de apps). Úsala cuando el usuario diga que creó o cambió algo hace poco, o no sepa el nombre.
-- find {"name": str, "path": str}: busca ARCHIVOS POR NOMBRE (acepta comodines: "*.py", "MONACO*"). Úsala para localizar archivos.
+- find {"name": str, "path": str}: busca ARCHIVOS POR NOMBRE. Sin comodines: todas las palabras en cualquier orden, sin acentos ni mayúsculas ("pasaporte scout"). Con comodines: patrón ("*.py"). Más recientes primero.
 - grep {"pattern": str, "path": str}: busca TEXTO DENTRO de los archivos de una carpeta (hasta 4 niveles). No sirve para buscar por nombre.
 - write_file {"path": str, "content": str}: crea o reemplaza un archivo completo.
 - SELECTOR común (classify, move, rename, group, tree, inspect): "filter" (texto o comodines), "ext": [..], "since"/"until": "AAAA-MM-DD", "older_days"/"newer_days": N (última modificación), "min_mb"/"max_mb": N.
@@ -118,7 +118,43 @@ async def recent(args: dict, max_out: int) -> str:
     return out
 
 
+def _norm(t: str) -> str:
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFD", t.lower()) if not unicodedata.combining(c))
+
+
+def _find_tokens(root: Path, name: str, depth: int = 6) -> list[str]:
+    """Nombres que contienen todas las palabras, en cualquier orden, sin distinguir mayúsculas ni acentos."""
+    import datetime as dt
+    import os
+    import re
+    toks = [_norm(t) for t in re.split(r"[\s_\-.]+", name) if t]
+    hits: list[tuple[float, str]] = []
+    base = len(root.parts)
+    for d, dirs, files in os.walk(root):
+        dirs[:] = [x for x in dirs if x not in HEAVY_DIRS and not x.startswith(".")]
+        if len(Path(d).parts) - base >= depth:
+            dirs[:] = []
+        for f in files:
+            n = _norm(f)
+            if all(t in n for t in toks):
+                p = os.path.join(d, f)
+                try:
+                    hits.append((os.path.getmtime(p), p))
+                except OSError:
+                    pass
+    hits.sort(reverse=True)
+    return [f"{dt.datetime.fromtimestamp(m):%Y-%m-%d %H:%M}  {p}" for m, p in hits]
+
+
 async def find(args: dict, max_out: int) -> str:
+    name = args.get("name", "*")
+    if not any(c in name for c in "*?[") and name.strip():
+        lines = await asyncio.to_thread(_find_tokens, _p(args), name)
+        if not lines:
+            return f"[find {name!r}] (sin resultados con todas las palabras; probar menos palabras)"
+        return (f"[find {name!r}] {len(lines)} resultados, más recientes primero\n" + "\n".join(lines[:30])
+                + (f"\n…y {len(lines) - 30} más" if len(lines) > 30 else ""))
     out = await _run(
         ["find", str(_p(args)), "-maxdepth", "6", *_prune_args(),
          "-iname", args.get("name", "*"), "-print"],

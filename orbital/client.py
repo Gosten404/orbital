@@ -17,7 +17,8 @@ from rich.markdown import Markdown
 from rich.markup import escape
 from rich.panel import Panel
 
-from . import config
+from . import __version__, config
+from . import voice as voicemod
 from .permissions import LEVELS
 
 con = Console()
@@ -38,6 +39,7 @@ HELP = """[bold]Comandos[/]
   /resume             cargar la bitácora de la última tarea
   /forget             vaciar el historial de la conversación
   /sound on|off       campana al pedir autorización; doble tono al terminar
+  /voice on|off       eventos de voz (inicio, ayuda, error, fin)
   /help · /quit
 [bold]Durante una tarea[/] (línea ↳)
   /cancel  /delete true|false  /touch clear  /state  /note <text>   (otro texto queda en cola)
@@ -120,6 +122,12 @@ def classify_live(line: str) -> tuple[str, object]:
 class Client:
     def __init__(self):
         self.cfg = config.load()
+        try:
+            self.voice_backend = voicemod.make_backend(self.cfg["voice"]["backend"],
+                                                       lambda s: con.print(f"[magenta]{escape(s)}[/]"))
+        except ValueError as e:
+            con.print(f"[yellow]{escape(str(e))}[/]")
+            self.voice_backend = voicemod.NullBackend()
         self.name = self.cfg['identity']['name']
         self.sound_on = True
         self.was_cancelled = False
@@ -337,6 +345,8 @@ class Client:
                 con.print(f"[{style}]{escape(m['text'])}[/]")
             elif t == "info":
                 con.print(Panel(m["text"], border_style="cyan", title=self.name))
+            elif t == "voice":
+                await self.voice_backend.speak(m["text"], m["kind"])
             elif t == "say":
                 title = f"{self.name} · relevo humano" if m.get("source") == "relevo" else self.name
                 con.print(Panel(Markdown(m["text"]), border_style="green", title=title))
@@ -443,6 +453,11 @@ class Client:
             await self.send({"type": "model", "value": rest.strip() or "?"})
         elif cmd == "/planmode":
             await self.send({"type": "planmode", "value": rest.strip() or "?"})
+        elif cmd == "/voice" and rest.strip().lower() not in ("", "on", "off"):
+            con.print("Uso: /voice on|off", style="red")
+        elif cmd == "/voice":
+            v = rest.strip().lower()
+            await self.send({"type": "voice", **({"enabled": v == "on"} if v else {})})
         elif cmd == "/delete" and rest.strip() and parse_bool(rest) is None:
             con.print(USAGE_DELETE, style="red")
         elif cmd == "/delete":
@@ -469,13 +484,13 @@ class Client:
         self.was_cancelled = False
         t0 = asyncio.get_running_loop().time()
         await self.pump()
-        if cmd not in ("/state", "/session", "/end", "/cd", "/mode", "/model", "/node", "/planmode", "/delete", "/touch"):
+        if cmd not in ("/state", "/session", "/end", "/cd", "/mode", "/model", "/node", "/planmode", "/delete", "/touch", "/voice"):
             self.beep_done(asyncio.get_running_loop().time() - t0)
 
     async def run(self):
         await self.connect()
         first = await self.recv()  # saludo
-        con.print(Panel(first["text"], border_style="cyan", title=f"{self.cfg['identity']['name']} · v0.2.24"))
+        con.print(Panel(first["text"], border_style="cyan", title=f"{self.cfg['identity']['name']} · v{__version__}"))
         con.print("[dim]/help[/]")
         while True:
             try:
@@ -511,9 +526,6 @@ class Client:
         if cmd == "/help":
             con.print(HELP)
             return False
-        if cmd == "/voice":
-            con.print("[dim]Voz: pendiente (v0.3)[/]")
-            return False
         if cmd == "/sound":
             v = rest.strip().lower()
             if v in ("on", "off"):
@@ -533,6 +545,13 @@ class Client:
 
 
 def run():
+    args = sys.argv[1:]
+    if args and args[0] in ("update", "--version"):
+        if args[0] == "--version":
+            print(f"O.R.B.I.T.A.L v{__version__}")
+            return
+        from . import update
+        sys.exit(update.main(args[1:]))
     try:
         asyncio.run(Client().run())
     except KeyboardInterrupt:

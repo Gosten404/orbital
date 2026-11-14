@@ -11,6 +11,13 @@ from pathlib import Path
 CONFIG_PATH = Path(os.environ.get("ORBITAL_CONFIG", "~/.config/orbital/config.toml")).expanduser()
 
 DEFAULTS: dict = {
+    "voice": {
+        "enabled": False,         # eventos de voz desde el arranque (/voice on|off en la sesión)
+        "backend": "print",       # print = muestra el texto; none = nada; un motor de audio se agrega en voice.BACKENDS
+        "max_chars": 200,         # largo máximo de una frase hablada
+        "summarize": True,        # resumir con el modelo pequeño SOLO al terminar y si la respuesta es larga
+        "summary_timeout": 12,    # s; si el modelo no responde, se recorta el texto
+    },
     "identity": {
         "name": "O.R.B.I.T.A.L",   # nombre visible; cámbialo en config.toml
     },
@@ -35,7 +42,7 @@ DEFAULTS: dict = {
         # Contexto máximo. Sin límite, Ollama puede reservar GBs de RAM para el contexto y congelar la PC.
         "router_num_ctx": 8192,       # IGUAL al del escalón 2b: es el mismo modelo y Ollama lo RECARGA si num_ctx cambia
         "local_num_ctx": 8192,
-        "gemini_model": "gemini-flash-latest",
+        "gemini_models": ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"],   # escalera: si el primero agota su cuota diaria, sigue el siguiente (flash normal, 20/día, descartado)
         "gemini_api_key_env": "GEMINI_API_KEY",
         "ipv4_only": True,
         "gemini_read_timeout": 25.0,   # si Gemini no responde en N s, abandona y reintenta con otra conexión

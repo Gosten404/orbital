@@ -438,7 +438,8 @@ def v0111():
     assert "T=1" not in run("cat .e''nv 2>&1", [h / "proj"], h / "proj")
     assert run(f"ls -A {h}/.ssh | wc -l", [h], h).strip() == "0"                    # nivel 3: .ssh vacía
     assert "AIzaX" not in run(f"cat {h}/.bash''rc 2>&1", [h], h)
-    assert "Read-only" in run(f"(echo y >> {h}/code/c.py) 2>&1", [h], h)               # su código: solo lectura
+    assert run(f"(echo y >> {h}/code/c.py) 2>&1", [h], h).strip()                      # su código: solo lectura (el mensaje depende del idioma)
+    assert (h / "code" / "c.py").read_text() == "x"
     assert run("ls /run | wc -l", [h / "proj"], h / "proj").strip() == "0"            # sin D-Bus / llavero
     print("OK: v0.1.11 (sandbox real: home oculto, secretos tapados, sin env, código solo lectura, sin D-Bus)")
 
@@ -695,6 +696,8 @@ async def v0212():
     assert any("modelo fijado, sin cambio" in str(e) for e in io.out)
 
     # la escalera NO vuelve a un modelo marcado como lento
+    async def _fits(p): return True
+    b.fits = _fits
     kind, val = await b.step_up([big, mid], IO(), "x", "t", s, core.TaskMemory(b.data_dir, "t", "x", "p", d), [],
                                 skip={"qwen3.5:9b"})
     assert kind == "switch" and val is mid
@@ -1675,7 +1678,7 @@ async def v0224():
     b.router = Fake("r", [json.dumps({"route": "simple", "herramientas": True})])
     b.local = Spy("local", [json.dumps({"respuesta": "listo"})])
     s = Session(cwd=dl); s.remember("user", "borra las carpetas vacías"); s.remember("assistant", "hecho")
-    await b.handle("lista la carpeta", s, IO())
+    await b.handle("lista de nuevo la carpeta", s, IO())   # seguimiento: lleva historial
     msgs = seen[-1]
     assert [m["role"] for m in msgs][:2] == ["system", "user"] and "assistant" not in [m["role"] for m in msgs][:1] and "borra las carpetas vacías" in msgs[0]["content"], msgs
     # cierre honesto: parte pedida sin acción exitosa
@@ -1695,7 +1698,156 @@ async def v0224():
 
 asyncio.run(v0224())
 
+
+# ---- v0.2.25: orbital update y release ----
+def v0225_update():
+    import subprocess, shutil, sys as _sys
+    from orbital import update as U
+    root = Path(tempfile.mkdtemp()); env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    import os
+    def g(cwd, *a): return subprocess.run(["git", "-C", str(cwd), *a], capture_output=True, text=True, env={**os.environ, **env}, check=True).stdout.strip()
+    src = Path(__file__).resolve().parent.parent
+    work = root / "dev"; work.mkdir()
+    for n in ("orbital", "tests", "tools"): shutil.copytree(src / n, work / n, ignore=shutil.ignore_patterns("__pycache__"))
+    for n in ("pyproject.toml", "README.md", ".gitignore"): shutil.copy(src / n, work / n)
+    g(work, "init", "-q", "-b", "main"); g(work, "add", "-A"); g(work, "commit", "-q", "-m", "base")
+    bare = root / "origin.git"; subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(bare)], check=True)
+    g(work, "remote", "add", "origin", str(bare)); g(work, "push", "-q", "-u", "origin", "main")
+    use = root / "use"; subprocess.run(["git", "clone", "-q", str(bare), str(use)], check=True)
+    out = []; kw = dict(repo=use, restart=False, install=False, out=out.append)
+    assert U.update(**kw) == 0 and out[-1].startswith("Al día"), out
+    # nueva versión publicada
+    (work / "orbital/__init__.py").write_text('__version__ = "9.9.9"\n'); g(work, "commit", "-q", "-am", "v9.9.9"); g(work, "push", "-q")
+    out.clear(); assert U.update(check=True, **kw) == 0 and "9.9.9" in out[-1] and "1 commit" in out[-1], out
+    assert U._version(use) != "9.9.9"                                   # --check no cambia nada
+    out.clear(); assert U.update(**kw) == 0 and "Actualizado" in out[-1] and U._version(use) == "9.9.9", out
+    out.clear(); assert U.update(rollback=True, **kw) == 0 and U._version(use) != "9.9.9", out
+    # cambios locales sin guardar: se niega
+    (use / "orbital/__init__.py").write_text("# sucio\n"); out.clear()
+    assert U.update(**kw) == 1 and "cambios locales" in out[-1], out
+    g(use, "checkout", "--", "orbital/__init__.py")
+    # versión rota: se revierte sola
+    (work / "orbital/core.py").write_text("def broken(:\n"); g(work, "commit", "-q", "-am", "rota"); g(work, "push", "-q")
+    before = g(use, "rev-parse", "HEAD"); out.clear()
+    assert U.update(**kw) == 1 and "revertida" in out[-1] and g(use, "rev-parse", "HEAD") == before, out
+    assert U.main(["--nope"]) == 2
+    # release.py: rechaza versión inválida y árbol sucio
+    r = subprocess.run([_sys.executable, str(work / "tools/release.py"), "x.y"], capture_output=True, text=True); assert r.returncode == 2
+    (work / "README.md").write_text((work / "README.md").read_text() + "x\n")
+    r = subprocess.run([_sys.executable, str(work / "tools/release.py"), "9.9.10", "--no-push"], capture_output=True, text=True)
+    assert r.returncode != 0 and "cambios sin guardar" in r.stdout + r.stderr, r.stdout + r.stderr
+    print("OK: v0.2.25 (orbital update: al día, check, actualizar, rollback, árbol sucio, versión rota revertida; release valida)")
+
+v0225_update()
+
+
+# ---- v0.2.25: base de voz (eventos, texto breve, resumen solo al final, motor intercambiable) ----
+async def v0225_voice():
+    from orbital import voice as V
+    from orbital.daemon import SocketIO
+    assert V.speakable("**Hecho** en `/home/u/Descargas/audio`. Ver https://x.io") == "Hecho en audio. Ver"
+    assert V.speakable("a" * 400, 100).endswith(".") and len(V.speakable("a " * 300, 100)) <= 101
+    assert V.facts_line("MOVIDOS: 160 archivos a 1 carpetas |  /x") == "160 archivos movidos a 1 carpetas."
+    assert V.phrase("start") == "Tarea iniciada." and V.phrase("error", "[!] Error interno: boom") == "Error: Error interno: boom"
+    assert V.phrase("help", "¿Permitir? mover de /home/a/Descargas a /home/a/Descargas/audio").endswith("mover de Descargas a audio")
+    # resumen: cifras > texto corto > modelo > recorte (sin modelo cuando no hace falta)
+    class Raise(Fake):
+        async def chat(self, *a, **k): raise RuntimeError("caído")
+    called = []
+    class Spy(Fake):
+        async def chat(self, messages, json_mode=False, **k): called.append(1); return "Resumen breve."
+    assert await V.summarize("MOVIDOS: 3 archivos a 1 carpetas", Spy("m", ["x"])) == "3 archivos movidos a 1 carpetas." and not called
+    assert await V.summarize("Listo.", Spy("m", ["x"])) == "Listo." and not called
+    largo = "Texto largo de la respuesta final. " * 30
+    assert await V.summarize(largo, Spy("m", ["x"])) == "Resumen breve." and called
+    r = await V.summarize(largo, Raise("m", ["x"])); assert 0 < len(r) <= 201 and r.endswith(".")
+    assert await V.summarize(largo, Spy("m", ["x"]), use_model=False) != "Resumen breve."
+    # motores
+    out = []; pb = V.make_backend("print", out.append); await pb.speak("hola", "done"); assert out == ["[voz:done] hola"]
+    assert isinstance(V.make_backend("none"), V.NullBackend)
+    try: V.make_backend("fish"); raise AssertionError
+    except ValueError as e: assert "fish" in str(e) and "print" in str(e)
+    # daemon: eventos por conexión
+    sent = []
+    class W:
+        def write(self, b): sent.append(json.loads(b))
+        async def drain(self): pass
+    io = SocketIO(asyncio.StreamReader(), W())
+    io.voice_cfg = {"max_chars": 200, "summary_timeout": 5, "summarize": True}; io.summarizer = Spy("m", ["x"])
+    await io.say(largo); io.speak("start"); await io.drain_voice(); assert not [m for m in sent if m["type"] == "voice"]   # apagada
+    io.voice = True; sent.clear(); called.clear()
+    io.speak("start"); await io.say("MOVIDOS: 160 archivos a 1 carpetas | /x"); await io.say("[!] Error interno: boom")
+    await io.say(largo)
+    async def ask(*a, **k): return True
+    io._ask = ask; await io.confirm("mover 160 archivos"); await io.drain_voice()
+    voz = {(m["kind"], m["text"]) for m in sent if m["type"] == "voice"}
+    assert ("start", "Tarea iniciada.") in voz and ("done", "160 archivos movidos a 1 carpetas.") in voz, voz
+    assert ("error", "Error: Error interno: boom") in voz and ("done", "Resumen breve.") in voz and len(called) == 1, (voz, called)
+    assert any(k == "help" and "mover 160 archivos" in t for k, t in voz), voz
+    io.speak("done", largo); io.cancel_voice(); await io.drain_voice()      # cancelar no deja tareas colgadas
+    assert not io._voice_tasks
+    io.reader_task.cancel()
+    from orbital.client import classify_live
+    assert classify_live("/voice on")[0] == "queue"    # /voice no es un comando en vivo: espera a que termine la tarea
+    print("OK: v0.2.25 (voz: eventos start/help/error/done, texto de plantillas y cifras, resumen del modelo solo al final, motores)")
+
+asyncio.run(v0225_voice())
+
 import importlib.util as _u
 _sp=_u.spec_from_file_location("lint_texts", __file__.replace("test_smoke.py","lint_texts.py")); _m=_u.module_from_spec(_sp); _sp.loader.exec_module(_m)
 _p=_m.lint(); assert not _p, "\n".join(_p)
 print("OK: lint de textos (sin muletillas, primera persona ni comandos antiguos)")
+
+
+# ---- 0.2.26 ----
+def v0226():
+    import asyncio, tempfile
+    from pathlib import Path
+    from orbital import tools, core
+    d = Path(tempfile.mkdtemp())
+    (d / "Pasaporte Scout (1).pdf").write_text("x")
+    (d / "otro.txt").write_text("x")
+    out = asyncio.run(tools.find({"name": "scout pasaporte", "path": str(d)}, 4000))   # orden libre
+    assert "Pasaporte Scout (1).pdf" in out and "otro.txt" not in out, out
+    assert "sin resultados" in asyncio.run(tools.find({"name": "zzz", "path": str(d)}, 4000))
+    assert not core.FOLLOWUP_RX.search("busca pdf de pasaporte")
+    assert core.FOLLOWUP_RX.search("ahora mueve eso a otra carpeta")
+
+
+v0226()
+print("0.2.26 OK")
+
+
+def v0226_gemini():
+    import asyncio, json
+    from orbital.providers import gemini as G
+    import httpx
+    calls = []
+    class R:
+        def __init__(s, c, t): s.status_code, s.text = c, t
+        def json(s): return json.loads(s.text)
+    script = {"a": [R(429, "RESOURCE_EXHAUSTED GenerateRequestsPerDayPerProjectPerModel")], "b": [R(200, json.dumps({"candidates": [{"content": {"parts": [{"text": "hola"}]}}]}))]}
+    class C:
+        def __init__(s, **k): pass
+        async def __aenter__(s): return s
+        async def __aexit__(s, *a): return False
+        async def post(s, url, **k):
+            m = url.split("/models/")[1].split(":")[0]; calls.append(m); return script[m].pop(0) if len(script[m]) > 1 else script[m][0]
+    orig = G.httpx.AsyncClient; G.httpx.AsyncClient = C
+    try:
+        import orbital.secrets as sec
+        sec.get = lambda *a, **k: ("k", "test")
+        g = G.Gemini(["a", "b"])
+        out = asyncio.run(g.chat([{"role": "user", "content": "x"}]))
+        assert out == "hola" and calls == ["a", "b"] and g.model == "b" and g.available, (out, calls)
+        g.spent["b"] = g._today(); assert not g.available   # ambos agotados
+        try:
+            asyncio.run(g.chat([{"role": "user", "content": "x"}])); assert False
+        except G.ProviderError as e:
+            assert "cuota diaria" in str(e)
+    finally:
+        G.httpx.AsyncClient = orig
+
+
+v0226_gemini()
+print("0.2.26 gemini OK")

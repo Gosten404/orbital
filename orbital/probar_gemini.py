@@ -18,7 +18,7 @@ from .providers.gemini import Gemini
 async def main() -> int:
     cfg = config.load()
     m = cfg["models"]
-    g = Gemini(m["gemini_model"], m["gemini_api_key_env"], m.get("ipv4_only", True),
+    g = Gemini(m.get("gemini_models") or m["gemini_model"], m["gemini_api_key_env"], m.get("ipv4_only", True),
                read_timeout=m.get("gemini_read_timeout", 25.0),
                retries=m.get("gemini_retries", 4),
                base=m.get("gemini_base", "https://generativelanguage.googleapis.com/v1beta"))

@@ -13,7 +13,7 @@ router_keep_alive = "30m"
 local_keep_alive  = "5m"
 router_num_ctx = 2048          # límite de contexto: sin esto Ollama puede reservar GBs y congelar la PC
 local_num_ctx  = 8192
-gemini_model = "gemini-flash-latest"   # o el nombre exacto que uses en Aider
+gemini_models = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]   # escalera por cuota diaria; verificar nombres con la lista de modelos de la API
 gemini_api_key_env = "GEMINI_API_KEY"
 
 [routing]
@@ -48,8 +48,16 @@ swap_growth_mb = 400           # si el swap crece esto mientras genera, corta y 
 secret_paths = ["~/.ssh", "~/.gnupg", "~/.password-store", "~/.config/orbital/secrets"]
 secret_globs = [".env", "*.pem", "*.key", "id_rsa*", "*.kdbx"]
 
+# Voz: el daemon emite eventos breves (inicio, ayuda, error, fin); el motor los reproduce.
+[voice]
+enabled = false          # /voice on|off en la sesión
+backend = "print"        # print = muestra el texto; none = nada
+max_chars = 200
+summarize = true         # resumen con el 2b solo al terminar y si la respuesta es larga
+summary_timeout = 12
+
 # Escalera de modelos locales: O.R.B.I.T.A.L elige según la complejidad de la tarea y la RAM libre.
-# Fuerza uno con /modelo 2b|4b|9b (no recomendado) y vuelve con /modelo auto.
+# Fuerza uno con /model 2b|4b|9b (no recomendado) y vuelve con /model auto.
 [[models.tiers]]
 model = "qwen3.5:2b"
 ram_gb = 3.0

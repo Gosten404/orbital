@@ -8,9 +8,11 @@ Cliente -> daemon:
   {"type": "state"}
   {"type": "reply", "id": n, "value": ...}                             # respuesta a confirm/relay/choose
   {"type": "cancel"}                                                   # Ctrl+C: corta la tarea en curso
+  {"type": "voice", "enabled": bool}                                   # activa los eventos de voz de esta conexión
 Daemon -> cliente:
   {"type": "say"|"status"|"info", "text": ...}
   {"type": "confirm"|"relay", "id": n, "text": ...}
+  {"type": "voice", "kind": "start"|"help"|"error"|"done", "text": ...}   # texto breve para leer en voz alta
   {"type": "done"}
 """
 from __future__ import annotations
@@ -24,6 +26,7 @@ import signal
 from pathlib import Path
 
 from . import config
+from . import voice as voicemod
 from .core import Brain, Session
 from .memory import last_memory, last_summary
 from .redact import clean, register_env_secrets
@@ -52,6 +55,10 @@ class SocketIO:
         self.queue: asyncio.Queue = asyncio.Queue()
         self.current: asyncio.Task | None = None
         self.on_live = None   # atiende {"type": "live"} al instante, aunque haya una tarea corriendo
+        self.voice = False    # eventos de voz activados por el cliente (/voice on)
+        self.voice_cfg: dict = {}
+        self.summarizer = None   # modelo pequeño para resumir la respuesta final
+        self._voice_tasks: set[asyncio.Task] = set()
         self.reader_task = asyncio.create_task(self._read_loop())
 
     async def _read_loop(self) -> None:
@@ -99,19 +106,53 @@ class SocketIO:
             for m in stash:
                 self.queue.put_nowait(m)
 
+    def speak(self, kind: str, text: str = "") -> None:
+        """Encola un evento de voz sin bloquear la tarea: el texto se calcula en segundo plano."""
+        if not self.voice:
+            return
+        t = asyncio.create_task(self._speak(kind, text))
+        self._voice_tasks.add(t)
+        t.add_done_callback(self._voice_tasks.discard)
+
+    async def _speak(self, kind: str, text: str) -> None:
+        c = self.voice_cfg
+        try:
+            if kind == "done":
+                out = await voicemod.summarize(text, self.summarizer, c.get("max_chars", 200),
+                                               c.get("summary_timeout", 12), c.get("summarize", True))
+            else:
+                out = voicemod.phrase(kind, text, c.get("max_chars", 200))
+            if out:
+                await self.send({"type": "voice", "kind": kind, "text": out})
+        except (ConnectionError, OSError):
+            pass
+
+    async def drain_voice(self) -> None:
+        """El prompt vuelve cuando el último evento de voz ya salió (el cliente solo lee mensajes durante la tarea)."""
+        if self._voice_tasks:
+            await asyncio.gather(*self._voice_tasks, return_exceptions=True)
+
+    def cancel_voice(self) -> None:
+        for t in list(self._voice_tasks):
+            t.cancel()
+
     async def say(self, text: str, source: str = "orbital") -> None:
         await self.send({"type": "say", "text": text, "source": source})
+        self.speak("error" if text.lstrip().startswith(("[!]", "ERROR")) else "done", text)
 
     async def status(self, text: str) -> None:
         await self.send({"type": "status", "text": text})
 
     async def confirm(self, description: str) -> bool:
+        self.speak("help", description)
         return bool(await self._ask("confirm", description))
 
     async def relay(self, prompt: str) -> str:
+        self.speak("help", "Se requiere la respuesta de Claude: el prompt está en el portapapeles.")
         return str(await self._ask("relay", prompt) or "")
 
     async def choose(self, question: str, options: list[str], multi: bool = True) -> list[int]:
+        self.speak("help", question)
         value = await self._ask("choose", question, options=options, multi=multi)
         return [int(x) for x in (value or [])]
 
@@ -138,6 +179,8 @@ class Daemon:
     async def client(self, reader, writer) -> None:
         io = SocketIO(reader, writer)
         io.on_live = lambda m: self.live(m, io)
+        io.voice_cfg, io.summarizer = self.cfg["voice"], self.brain.router
+        io.voice = bool(self.cfg["voice"].get("enabled"))
         last = last_summary(self.data)
         await io.send({"type": "info", "text": f"{self.cfg['identity']['name']} · {self.session.policy.describe()} · cwd {self.session.cwd}"
                        + (f"\n{last}" if last else "")})
@@ -151,9 +194,11 @@ class Daemon:
                         if io.reader_task.done():  # se fue el cliente
                             break
                         self.log({"ev": "cancelled"})
+                        io.cancel_voice()
                         await io.send({"type": "status", "text": "[x] Tarea cancelada"})
                     finally:
                         io.current = None
+                await io.drain_voice()
                 await io.send({"type": "done"})
         except (ConnectionError, BrokenPipeError):
             pass
@@ -258,8 +303,13 @@ class Daemon:
     async def dispatch(self, msg: dict, io: SocketIO) -> None:
         t = msg.get("type")
         s = self.session
-        if t == "user":
+        if t == "voice":
+            if "enabled" in msg:
+                io.voice = bool(msg["enabled"])
+            await io.send({"type": "info", "text": f"Voz: {'on' if io.voice else 'off'} · motor {self.cfg['voice']['backend']}"})
+        elif t == "user":
             from .busy import busy
+            io.speak("start")
             try:
                 with busy(msg["text"]):  # el bot de capturas lo detecta y no captura durante la tarea
                     await self.brain.handle(msg["text"], s, io)
@@ -295,7 +345,7 @@ class Daemon:
                 await io.send({"type": "info", "text": f"Carpeta inexistente: {p}"})
         elif t == "state":
             m = self.cfg["models"]
-            gem = (f"{m['gemini_model']} (key: {self.brain.gemini.key_source})" if self.brain.gemini.available else "sin API key")
+            gem = (f"{' > '.join(self.brain.gemini.models)} (key: {self.brain.gemini.key_source})" if self.brain.gemini.available else "sin API key")
             await io.send({"type": "info", "text": (
                 f"{s.policy.describe()}\n"
                 f"cwd {s.cwd} · modo {s.mode} · plan {getattr(s, 'plan_mode', 'auto')}\n"
